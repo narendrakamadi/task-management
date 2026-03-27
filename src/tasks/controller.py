@@ -3,10 +3,16 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from src.tasks.models import TaskModel
 from fastapi import HTTPException
+from src.user.models import UserModel
 
-def create_task(body: TaskSchema, db: Session):
+def create_task(body: TaskSchema, db: Session, user: UserModel):
     try:
-        new_task = TaskModel(**body.model_dump())
+        new_task = TaskModel(
+            **body.model_dump(),
+            user_id=user.id
+        )
+
+
 
         db.add(new_task)
         db.commit()
@@ -23,9 +29,9 @@ def create_task(body: TaskSchema, db: Session):
         }
     
 
-def get_tasks(db: Session):
+def get_tasks(db: Session, user: UserModel):
     try:
-        tasks = db.query(TaskModel).all()
+        tasks = db.query(TaskModel).filter(TaskModel.user_id == user.id).all()
 
         return tasks
     
@@ -36,28 +42,49 @@ def get_tasks(db: Session):
         )
     
 
-def get_task_by_id(task_id: int, db: Session):
+def get_task_by_id(task_id: int, db: Session, user: UserModel):
     try:
-        task = db.get(TaskModel, task_id)
+        task: TaskModel = db.query(TaskModel)\
+            .filter(
+                TaskModel.id == task_id,
+                TaskModel.user_id == user.id
+            )\
+            .first()
 
+        if not task:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Task with id {task_id} not found"
+            )
+
+        return task
+
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to fetch task"
+        )
+    
+    
+def update_task(body: TaskSchema, task_id: int, db: Session, user: UserModel):
+    try:
+        task: TaskModel = db.query(TaskModel)\
+            .filter(
+                TaskModel.id == task_id,
+                TaskModel.user_id == user.id
+            )\
+            .first()
+
+        # Not found OR not owned by user
         if not task:
             raise HTTPException(status_code=404, detail=f"Task with id {task_id} not found")
         
-        return task
-    except HTTPException:
-        raise
+        # Only update provided fields
+        update_data = body.model_dump(exclude_unset=True)
 
-    except SQLAlchemyError:
-        raise HTTPException(status_code=500, detail="Failed to fetch task")
-
-
-def update_task(body: TaskSchema, task_id: int, db: Session):
-    try:
-        task = db.get(TaskModel, task_id)
-
-        # Not found
-        if not task:
-            raise HTTPException(status_code=404, detail=f"Task with id {task_id} not found")
+        # Prevent sensitive field update
+        update_data.pop("user_id", None)
+        update_data.pop("id", None)
     
         # Update field dynamically
         for key, value in body.model_dump().items():
@@ -75,13 +102,21 @@ def update_task(body: TaskSchema, task_id: int, db: Session):
         db.rollback()
         raise HTTPException(status_code=500, detail="Failed to update task")
     
-def delete_task(task_id: int, db: Session):
+def delete_task(task_id: int, db: Session, user: UserModel):
     try:
-        task = db.get(TaskModel, task_id)
+        task: TaskModel = db.query(TaskModel)\
+            .filter(
+                TaskModel.id == task_id,
+                TaskModel.user_id == user.id
+            )\
+            .first()
 
-        # Not found
+        # Not found OR not owned by user
         if not task:
-            raise HTTPException(status_code=404, detail=f"Task with id {task_id} not found")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Task with id {task_id} not found"
+            )
         
         db.delete(task)
         db.commit()
@@ -93,4 +128,7 @@ def delete_task(task_id: int, db: Session):
 
     except SQLAlchemyError:
         db.rollback()
-        raise HTTPException(status_code=500, detail="Failed to delete task")
+        raise HTTPException(
+            status_code=500, 
+            detail="Failed to delete task"
+        )
